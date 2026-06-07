@@ -1,0 +1,938 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>نظام رصد المشوهات البصرية</title>
+<meta name="theme-color" content="#0e6e5c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="رصد المشوهات">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Crect width='180' height='180' rx='40' fill='%230e6e5c'/%3E%3Ctext x='90' y='120' font-size='90' text-anchor='middle'%3E%F0%9F%9B%B0%EF%B8%8F%3C/text%3E%3C/svg%3E">
+
+<!--
+  ════════════════════════════════════════════════════════════════════
+   إعداد المزامنة اللحظية (اختياري) — Supabase
+   اتركيه فارغاً ليعمل التطبيق محلياً على الجهاز فقط.
+   لتفعيل المزامنة بين كل المراقبين: أنشئي مشروع Supabase والصقي الرابط
+   والمفتاح أدناه، ثم نفّذي هذا الجدول في SQL Editor:
+
+   create table violations (
+     id text primary key,
+     number text, inspector text, role text, center text,
+     type text, severity text, points int, description text, status text,
+     lat double precision, lng double precision,
+     photo_before text, photo_after text, notes text,
+     area text, created_at timestamptz default now(), closed_at timestamptz
+   );
+   alter table violations enable row level security;
+   create policy "all_access" on violations for all using (true) with check (true);
+   -- ثم فعّلي Realtime على الجدول من Database > Replication
+  ════════════════════════════════════════════════════════════════════
+-->
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@500;600;700;800;900&family=Tajawal:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+:root{
+  --bg:#f4f1e9; --surface:#ffffff; --surface-2:#fbfaf6;
+  --ink:#192521; --ink-soft:#48564f; --line:#e3ddd0;
+  --primary:#0e6e5c; --primary-dark:#0a5346; --primary-soft:#e3f0ec;
+  --accent:#c8881f; --accent-soft:#f7ecd6;
+  --sev-critical:#b3261e; --sev-high:#d4691a; --sev-medium:#c69500;
+  --sev-low:#2f7fb5; --sev-minor:#5e8a78; --sev-advisory:#8a9aa3;
+  --st-new:#b3261e; --st-progress:#c8881f; --st-closed:#0e6e5c;
+  --radius:16px; --shadow:0 4px 18px rgba(25,37,33,.08);
+  --shadow-lg:0 10px 40px rgba(25,37,33,.14);
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{
+  font-family:'Tajawal',sans-serif;background:var(--bg);color:var(--ink);
+  background-image:radial-gradient(circle at 12% 8%, #ffffff 0, transparent 42%),
+    radial-gradient(circle at 88% 95%, var(--primary-soft) 0, transparent 45%);
+  background-attachment:fixed;line-height:1.55;overscroll-behavior:none;
+}
+h1,h2,h3,h4,.brand{font-family:'Cairo',sans-serif}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+input,select,textarea{font-family:inherit;font-size:15px}
+.hidden{display:none!important}
+
+/* ===== Header ===== */
+.app-header{
+  position:sticky;top:0;z-index:50;background:linear-gradient(120deg,var(--primary-dark),var(--primary));
+  color:#fff;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;
+  box-shadow:0 2px 16px rgba(10,83,70,.3)
+}
+.app-header .brand{display:flex;align-items:center;gap:11px}
+.logo-mark{width:42px;height:42px;border-radius:12px;background:rgba(255,255,255,.14);
+  display:grid;place-items:center;font-size:22px;border:1px solid rgba(255,255,255,.25)}
+.app-header h1{font-size:17px;font-weight:800;line-height:1.2}
+.app-header .sub{font-size:11px;opacity:.85;font-weight:500}
+.user-chip{display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.13);
+  padding:6px 10px;border-radius:30px;font-size:12.5px;border:1px solid rgba(255,255,255,.18)}
+.user-chip .avatar{width:26px;height:26px;border-radius:50%;background:var(--accent);
+  display:grid;place-items:center;font-weight:800;font-size:12px;color:#fff}
+.user-chip button{font-size:14px;opacity:.85;padding:0 2px}
+
+/* ===== Layout ===== */
+.wrap{max-width:1180px;margin:0 auto;padding:18px 16px 96px}
+.view{animation:fade .35s ease}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+/* ===== Cards / form ===== */
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+  box-shadow:var(--shadow);padding:18px;margin-bottom:16px}
+.card-title{font-size:15px;font-weight:800;margin-bottom:14px;display:flex;align-items:center;gap:9px;color:var(--ink)}
+.card-title .ico{width:30px;height:30px;border-radius:9px;background:var(--primary-soft);
+  display:grid;place-items:center;color:var(--primary-dark);font-size:16px}
+.field{margin-bottom:14px}
+.field label{display:block;font-size:12.5px;font-weight:700;color:var(--ink-soft);margin-bottom:6px}
+.field input,.field select,.field textarea{
+  width:100%;padding:11px 13px;border:1.5px solid var(--line);border-radius:11px;
+  background:var(--surface-2);color:var(--ink);transition:.18s}
+.field input:focus,.field select:focus,.field textarea:focus{
+  outline:none;border-color:var(--primary);background:#fff;box-shadow:0 0 0 3px var(--primary-soft)}
+.field textarea{resize:vertical;min-height:76px}
+.field .readonly{background:#f0ede5;color:var(--ink-soft);font-weight:700}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:560px){.grid-2{grid-template-columns:1fr}}
+
+/* badges */
+.badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:30px;
+  font-size:11.5px;font-weight:700;white-space:nowrap}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+
+/* buttons */
+.btn{padding:12px 18px;border-radius:12px;font-weight:700;font-size:14.5px;
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;transition:.18s;border:1.5px solid transparent}
+.btn-primary{background:var(--primary);color:#fff;box-shadow:0 4px 14px rgba(14,110,92,.32)}
+.btn-primary:active{transform:scale(.98)}
+.btn-ghost{background:var(--surface);border-color:var(--line);color:var(--ink)}
+.btn-accent{background:var(--accent);color:#fff}
+.btn-danger{background:#fbe9e7;color:var(--sev-critical);border-color:#f3cfca}
+.btn-block{width:100%}
+.btn-row{display:flex;gap:10px;flex-wrap:wrap}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+
+/* GPS & camera */
+.media-btn{display:flex;align-items:center;gap:12px;width:100%;padding:14px;border:1.5px dashed var(--line);
+  border-radius:13px;background:var(--surface-2);text-align:right;transition:.18s}
+.media-btn:hover{border-color:var(--primary);background:#fff}
+.media-btn .mi{width:42px;height:42px;border-radius:11px;background:var(--primary-soft);
+  display:grid;place-items:center;font-size:20px;flex-shrink:0}
+.media-btn .mt{font-weight:700;font-size:13.5px}
+.media-btn .ms{font-size:11.5px;color:var(--ink-soft)}
+.thumb{position:relative;border-radius:12px;overflow:hidden;border:1.5px solid var(--line)}
+.thumb img{width:100%;height:150px;object-fit:cover;display:block}
+.thumb .rm{position:absolute;top:6px;left:6px;width:28px;height:28px;border-radius:50%;
+  background:rgba(0,0,0,.6);color:#fff;display:grid;place-items:center;font-size:15px}
+
+/* ===== List ===== */
+.toolbar{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:14px}
+.toolbar select,.toolbar input{padding:9px 12px;border:1.5px solid var(--line);border-radius:10px;
+  background:var(--surface);font-size:13px;flex:1;min-width:120px}
+.v-card{background:var(--surface);border:1px solid var(--line);border-radius:14px;
+  box-shadow:var(--shadow);overflow:hidden;margin-bottom:12px;display:flex}
+.v-stripe{width:6px;flex-shrink:0}
+.v-body{padding:13px 14px;flex:1;min-width:0}
+.v-top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:7px}
+.v-num{font-family:'Cairo';font-weight:800;font-size:13px;color:var(--primary-dark)}
+.v-type{font-weight:700;font-size:15px;margin-bottom:3px}
+.v-meta{font-size:12px;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:4px 12px;margin-bottom:9px}
+.v-meta span{display:inline-flex;align-items:center;gap:4px}
+.v-foot{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.v-actions{display:flex;gap:6px}
+.icon-btn{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;font-size:15px;
+  background:var(--surface-2);border:1px solid var(--line)}
+.icon-btn.del{color:var(--sev-critical)}
+.pts{font-family:'Cairo';font-weight:800;font-size:15px}
+.empty{text-align:center;padding:50px 20px;color:var(--ink-soft)}
+.empty .ei{font-size:46px;margin-bottom:10px;opacity:.5}
+
+/* ===== Dashboard ===== */
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:12px;margin-bottom:16px}
+.kpi{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:15px;
+  box-shadow:var(--shadow);position:relative;overflow:hidden}
+.kpi::before{content:'';position:absolute;inset:0 auto 0 0;width:5px;background:var(--primary)}
+.kpi.crit::before{background:var(--sev-critical)}
+.kpi.high::before{background:var(--sev-high)}
+.kpi.ok::before{background:var(--primary)}
+.kpi.acc::before{background:var(--accent)}
+.kpi .kl{font-size:12px;color:var(--ink-soft);font-weight:600;margin-bottom:6px}
+.kpi .kv{font-family:'Cairo';font-weight:900;font-size:30px;line-height:1}
+.kpi .ku{font-size:12px;color:var(--ink-soft);margin-top:4px}
+.chart-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:760px){.chart-grid{grid-template-columns:1fr}}
+.chart-box{position:relative;height:260px}
+#map{height:340px;border-radius:13px;border:1px solid var(--line);z-index:1}
+.rank-row{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line)}
+.rank-row:last-child{border:none}
+.rank-row .rn{width:26px;height:26px;border-radius:8px;background:var(--primary-soft);
+  display:grid;place-items:center;font-weight:800;font-size:12px;color:var(--primary-dark);flex-shrink:0}
+.rank-row .rname{flex:1;font-weight:600;font-size:13.5px}
+.rank-row .rval{font-family:'Cairo';font-weight:800;font-size:14px;color:var(--primary-dark)}
+
+/* ===== Bottom nav ===== */
+.bottom-nav{position:fixed;bottom:0;left:0;right:0;z-index:60;background:rgba(255,255,255,.94);
+  backdrop-filter:blur(12px);border-top:1px solid var(--line);display:flex;
+  box-shadow:0 -4px 20px rgba(25,37,33,.07);padding-bottom:env(safe-area-inset-bottom)}
+.nav-btn{flex:1;padding:10px 4px 11px;display:flex;flex-direction:column;align-items:center;gap:3px;
+  color:var(--ink-soft);font-size:11px;font-weight:600;transition:.15s;position:relative}
+.nav-btn .ni{font-size:21px;line-height:1}
+.nav-btn.active{color:var(--primary)}
+.nav-btn.active::after{content:'';position:absolute;top:0;width:34px;height:3px;border-radius:3px;background:var(--primary)}
+
+/* ===== Modal / overlay ===== */
+.overlay{position:fixed;inset:0;z-index:100;background:rgba(25,37,33,.5);backdrop-filter:blur(3px);
+  display:grid;place-items:center;padding:16px;animation:fade .2s}
+.modal{background:var(--surface);border-radius:18px;width:100%;max-width:480px;max-height:90vh;
+  overflow:auto;box-shadow:var(--shadow-lg)}
+.modal-head{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;
+  position:sticky;top:0;background:var(--surface);z-index:2}
+.modal-head h3{font-size:16px;font-weight:800}
+.modal-body{padding:18px}
+.close-x{width:32px;height:32px;border-radius:9px;background:var(--surface-2);display:grid;place-items:center;font-size:18px}
+
+/* login */
+.login-screen{min-height:100vh;display:grid;place-items:center;padding:24px}
+.login-card{background:var(--surface);border-radius:22px;box-shadow:var(--shadow-lg);padding:30px 26px;width:100%;max-width:400px;text-align:center}
+.login-logo{width:74px;height:74px;border-radius:20px;margin:0 auto 16px;
+  background:linear-gradient(135deg,var(--primary),var(--primary-dark));display:grid;place-items:center;font-size:38px;
+  box-shadow:0 8px 24px rgba(14,110,92,.35)}
+.login-card h2{font-size:20px;font-weight:800;margin-bottom:4px}
+.login-card p{font-size:13px;color:var(--ink-soft);margin-bottom:22px}
+.login-card .field{text-align:right}
+
+/* toast */
+.toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);z-index:200;
+  background:var(--ink);color:#fff;padding:11px 20px;border-radius:30px;font-size:13.5px;font-weight:600;
+  box-shadow:var(--shadow-lg);animation:fade .25s}
+.sync-tag{font-size:11px;padding:3px 9px;border-radius:20px;font-weight:700}
+.sync-on{background:var(--primary-soft);color:var(--primary-dark)}
+.sync-off{background:#f0ede5;color:var(--ink-soft)}
+.gps-ok{color:var(--primary)!important;font-weight:700}
+.conn-pill{font-size:11px;font-weight:700;padding:5px 10px;border-radius:30px;white-space:nowrap;border:1px solid transparent}
+.conn-pill.on{background:rgba(255,255,255,.18);color:#fff;border-color:rgba(255,255,255,.3)}
+.conn-pill.off{background:#c8881f;color:#fff}
+.conn-pill.local{background:rgba(255,255,255,.13);color:#fff;border-color:rgba(255,255,255,.22)}
+</style>
+</head>
+<body>
+
+<!-- ============ LOGIN ============ -->
+<div id="login" class="login-screen">
+  <div class="login-card">
+    <div class="login-logo">🛰️</div>
+    <h2>نظام رصد المشوهات البصرية</h2>
+    <p>بلدية مدينة العين — المركز البلدي الفرعي</p>
+    <div class="field"><label>الاسم</label><input id="lg-name" placeholder="اسم المستخدم"></div>
+    <div class="field"><label>الصفة</label>
+      <select id="lg-role">
+        <option value="مراقب">مراقب ميداني</option>
+        <option value="مشرف المركز">مشرف المركز</option>
+        <option value="مدير المركز">مدير المركز</option>
+        <option value="مدير النظام">مدير النظام</option>
+      </select>
+    </div>
+    <div class="field"><label>المركز</label><select id="lg-center"></select></div>
+    <button class="btn btn-primary btn-block" onclick="doLogin()">دخول النظام</button>
+  </div>
+</div>
+
+<!-- ============ APP ============ -->
+<div id="app" class="hidden">
+  <header class="app-header">
+    <div class="brand">
+      <div class="logo-mark">🛰️</div>
+      <div>
+        <h1>رصد المشوهات البصرية</h1>
+        <div class="sub">بلدية مدينة العين</div>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:9px">
+    <span id="conn" class="conn-pill local">💾 محلي</span>
+    <div class="user-chip">
+      <div class="avatar" id="hd-av">؟</div>
+      <div><div id="hd-name" style="font-weight:700">—</div><div id="hd-role" style="font-size:10.5px;opacity:.85"></div></div>
+      <button onclick="logout()" title="خروج">⏻</button>
+    </div>
+    </div>
+  </header>
+
+  <div class="wrap">
+
+    <!-- ===== تسجيل ===== -->
+    <section id="v-register" class="view">
+      <div class="card">
+        <div class="card-title"><span class="ico">📝</span> تسجيل مخالفة جديدة</div>
+        <div class="grid-2">
+          <div class="field"><label>رقم البلاغ</label><input id="f-number" class="readonly" readonly></div>
+          <div class="field"><label>تاريخ ووقت الرصد</label><input id="f-date" class="readonly" readonly></div>
+        </div>
+        <div class="grid-2">
+          <div class="field"><label>اسم المراقب</label><input id="f-inspector" class="readonly" readonly></div>
+          <div class="field"><label>المركز</label><select id="f-center"></select></div>
+        </div>
+        <div class="field"><label>نوع المشوه البصري</label>
+          <select id="f-type" onchange="onTypeChange()"><option value="">— اختر النوع —</option></select>
+        </div>
+        <div class="grid-2">
+          <div class="field"><label>مستوى الخطورة</label>
+            <select id="f-severity" onchange="onSevChange()"></select>
+          </div>
+          <div class="field"><label>النقاط (تلقائي)</label><input id="f-points" class="readonly" readonly></div>
+        </div>
+        <div class="field"><label>المنطقة / الحي</label><input id="f-area" placeholder="مثال: المقام – القطاع 3"></div>
+        <div class="field"><label>وصف المخالفة</label><textarea id="f-desc" placeholder="وصف موجز للمخالفة..."></textarea></div>
+        <div class="field"><label>الحالة</label>
+          <select id="f-status">
+            <option value="جديدة">جديدة</option>
+            <option value="تحت المعالجة">تحت المعالجة</option>
+            <option value="مغلقة">مغلقة</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span class="ico">📍</span> الموقع والصورة</div>
+        <div class="field">
+          <button class="media-btn" onclick="getGPS()">
+            <span class="mi">📍</span>
+            <span><span class="mt" id="gps-title">تحديد الموقع الجغرافي (GPS)</span><br><span class="ms" id="gps-sub">اضغط لالتقاط الإحداثيات تلقائياً</span></span>
+          </button>
+        </div>
+        <div class="field">
+          <label>الصورة قبل المعالجة</label>
+          <input type="file" accept="image/*" capture="environment" id="cam-before" class="hidden" onchange="capturePhoto(this,'before')">
+          <div id="prev-before"></div>
+          <button class="media-btn" onclick="document.getElementById('cam-before').click()">
+            <span class="mi">📷</span>
+            <span><span class="mt">التقاط صورة المخالفة</span><br><span class="ms">من الكاميرا مباشرة أو المعرض</span></span>
+          </button>
+        </div>
+        <div class="btn-row" style="margin-top:6px">
+          <button class="btn btn-primary btn-block" onclick="saveViolation()">💾 حفظ البلاغ</button>
+        </div>
+        <button class="btn btn-ghost btn-block" style="margin-top:10px" onclick="resetForm()">مسح الحقول</button>
+      </div>
+    </section>
+
+    <!-- ===== السجل ===== -->
+    <section id="v-list" class="view hidden">
+      <div class="toolbar">
+        <input id="flt-search" placeholder="🔍 بحث..." oninput="renderList()">
+        <select id="flt-center" onchange="renderList()"><option value="">كل المراكز</option></select>
+        <select id="flt-sev" onchange="renderList()"><option value="">كل المستويات</option></select>
+        <select id="flt-status" onchange="renderList()">
+          <option value="">كل الحالات</option><option>جديدة</option><option>تحت المعالجة</option><option>مغلقة</option>
+        </select>
+      </div>
+      <div id="list-container"></div>
+    </section>
+
+    <!-- ===== اللوحة ===== -->
+    <section id="v-dash" class="view hidden">
+      <div class="kpi-grid" id="kpi-grid"></div>
+      <div class="card">
+        <div class="card-title"><span class="ico">🗺️</span> الخريطة التفاعلية للمواقع</div>
+        <div id="map"></div>
+      </div>
+      <div class="chart-grid">
+        <div class="card"><div class="card-title"><span class="ico">⚠️</span> حسب مستوى الخطورة</div><div class="chart-box"><canvas id="ch-sev"></canvas></div></div>
+        <div class="card"><div class="card-title"><span class="ico">🏢</span> حسب المركز</div><div class="chart-box"><canvas id="ch-center"></canvas></div></div>
+        <div class="card"><div class="card-title"><span class="ico">🧩</span> حسب نوع المشوه</div><div class="chart-box"><canvas id="ch-type"></canvas></div></div>
+        <div class="card"><div class="card-title"><span class="ico">📅</span> حسب الشهر</div><div class="chart-box"><canvas id="ch-month"></canvas></div></div>
+      </div>
+      <div class="chart-grid">
+        <div class="card"><div class="card-title"><span class="ico">👷</span> أداء المراقبين</div><div id="rank-inspectors"></div></div>
+        <div class="card"><div class="card-title"><span class="ico">🔥</span> أعلى المناطق تكراراً</div><div id="rank-areas"></div></div>
+      </div>
+    </section>
+
+    <!-- ===== الإعدادات ===== -->
+    <section id="v-settings" class="view hidden">
+      <div class="card">
+        <div class="card-title"><span class="ico">🔄</span> حالة المزامنة</div>
+        <p style="font-size:13.5px;color:var(--ink-soft);margin-bottom:10px">
+          الوضع الحالي: <span id="sync-state" class="sync-tag sync-off">محلي (هذا الجهاز فقط)</span>
+        </p>
+        <p style="font-size:12.5px;color:var(--ink-soft)">لتفعيل المزامنة اللحظية بين كل المراقبين، الصقي رابط ومفتاح Supabase في أعلى ملف الكود (مكتوبة التعليمات الكاملة هناك).</p>
+      </div>
+      <div class="card">
+        <div class="card-title"><span class="ico">🏢</span> المراكز</div>
+        <div id="centers-list" style="margin-bottom:10px"></div>
+        <div class="btn-row">
+          <input id="new-center" placeholder="اسم مركز جديد" style="flex:1;padding:10px 12px;border:1.5px solid var(--line);border-radius:10px">
+          <button class="btn btn-ghost" onclick="addCenter()">إضافة</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title"><span class="ico">📊</span> البيانات</div>
+        <div class="btn-row">
+          <button class="btn btn-accent" onclick="exportExcel()">⬇️ تصدير Excel</button>
+          <button class="btn btn-ghost" onclick="exportJSON()">نسخة احتياطية (JSON)</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title"><span class="ico">🎯</span> مرجع النقاط</div>
+        <div id="points-ref" style="font-size:13px"></div>
+      </div>
+    </section>
+  </div>
+
+  <!-- bottom nav -->
+  <nav class="bottom-nav">
+    <button class="nav-btn active" data-view="register" onclick="nav('register')"><span class="ni">📝</span>تسجيل</button>
+    <button class="nav-btn" data-view="list" onclick="nav('list')"><span class="ni">📋</span>السجل</button>
+    <button class="nav-btn" data-view="dash" onclick="nav('dash')"><span class="ni">📊</span>اللوحة</button>
+    <button class="nav-btn" data-view="settings" onclick="nav('settings')"><span class="ni">⚙️</span>الإعدادات</button>
+  </nav>
+</div>
+
+<!-- edit modal placeholder -->
+<div id="modal-root"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+/* ============================================================
+   إعداد Supabase (اتركيه فارغاً للعمل المحلي)
+============================================================ */
+const SUPABASE_URL = 'https://pynktpmqahpiinbmhumd.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_TGrx8fKS5haOQkPSwt3rOQ_LyoTLi3O';
+
+/* ============================================================
+   مرجعيات النظام
+============================================================ */
+const TYPES = [
+  {name:'مباني مهجورة', sev:'حرجة'},
+  {name:'حفر بالطرق', sev:'حرجة'},
+  {name:'أعمدة أو أسلاك مكشوفة', sev:'حرجة'},
+  {name:'مخلفات بناء', sev:'عالية'},
+  {name:'تشوه واجهات المباني', sev:'متوسطة'},
+  {name:'لوحات تالفة', sev:'متوسطة'},
+  {name:'الكتابات على الجدران', sev:'منخفضة'},
+  {name:'تشوهات بسيطة', sev:'توجيه فقط'},
+];
+const SEV_POINTS = {'حرجة':100,'عالية':80,'متوسطة':60,'منخفضة':40,'بسيطة':20,'توجيه فقط':10};
+const SEV_ORDER = ['حرجة','عالية','متوسطة','منخفضة','بسيطة','توجيه فقط'];
+const SEV_COLOR = {'حرجة':'#b3261e','عالية':'#d4691a','متوسطة':'#c69500','منخفضة':'#2f7fb5','بسيطة':'#5e8a78','توجيه فقط':'#8a9aa3'};
+const ST_COLOR = {'جديدة':'#b3261e','تحت المعالجة':'#c8881f','مغلقة':'#0e6e5c'};
+const ROLES = {
+  'مراقب':{add:true,edit:true,del:false,close:false},
+  'مشرف المركز':{add:true,edit:true,del:true,close:true},
+  'مدير المركز':{add:true,edit:true,del:true,close:true},
+  'مدير النظام':{add:true,edit:true,del:true,close:true},
+};
+const DEFAULT_CENTERS = ['المقام','العامرة','رماح','الخزنة'];
+
+/* ============================================================
+   حدود نطاق المقام–الخزنة + نقاط المراكز
+   ⚠️ إحداثيات تمثيلية تقريبية — استبدليها بإحداثيات GIS الرسمية
+   من بلدية العين (نفس ترتيب [خط العرض, خط الطول]).
+============================================================ */
+const ZONE = {
+  boundary: [
+    [24.305,55.790],[24.290,55.640],[24.225,55.560],[24.120,55.560],
+    [24.050,55.640],[24.060,55.760],[24.135,55.825],[24.245,55.820],[24.305,55.790]
+  ],
+  centers: [
+    {name:'المركز البلدي الفرعي المقام', lat:24.160, lng:55.735, type:'مركز فرعي'},
+    {name:'التواجد البلدي العامرة',     lat:24.235, lng:55.700, type:'تواجد بلدي'},
+    {name:'الساد',                       lat:24.270, lng:55.655, type:'تواجد بلدي'},
+    {name:'المكتب التمثيلي رماح',        lat:24.100, lng:55.615, type:'مكتب تمثيلي'},
+    {name:'التواجد البلدي الخزنة',       lat:24.080, lng:55.715, type:'تواجد بلدي'},
+  ]
+};
+const CENTER_STYLE = {
+  'مركز فرعي':{color:'#0a5346',emoji:'🏛️'},
+  'تواجد بلدي':{color:'#c8881f',emoji:'🏢'},
+  'مكتب تمثيلي':{color:'#2f7fb5',emoji:'📍'},
+};
+/* ⬇️ الصقي مخرجات GeoJSON الرسمية هنا (FeatureCollection بنظام WGS84 / EPSG:4326).
+   عند وجودها يتجاهل النظام الإحداثيات التمثيلية أعلاه ويرسم الحدود والمراكز تلقائياً.
+   أي Feature من نوع Polygon = حدود؛ ونوع Point = مركز (يقرأ properties.name و properties.type). */
+const ZONE_GEOJSON = null;
+
+/* ============================================================
+   الحالة + التخزين
+============================================================ */
+let DB=[], USER=null, CENTERS=[], gpsCoords=null, photoBefore=null, sb=null, USE_SB=false, charts={}, map=null, mapLayer=null, zoneDrawn=false;
+
+function lsGet(k,d){try{return JSON.parse(localStorage.getItem(k))??d}catch(e){return d}}
+function lsSet(k,v){localStorage.setItem(k,JSON.stringify(v))}
+
+const OUTBOX_KEY='bv_outbox';
+function outboxGet(){return lsGet(OUTBOX_KEY,[])}
+function outboxSet(o){lsSet(OUTBOX_KEY,o)}
+function outboxAdd(op){const o=outboxGet();o.push(op);outboxSet(o)}
+function pendingCount(){return outboxGet().length}
+
+async function initData(){
+  CENTERS = lsGet('bv_centers', DEFAULT_CENTERS.slice());
+  if(SUPABASE_URL && SUPABASE_ANON_KEY && window.supabase){
+    try{
+      sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+      USE_SB=true;
+      sb.channel('viol').on('postgres_changes',{event:'*',schema:'public',table:'violations'},()=>loadAll()).subscribe();
+    }catch(e){USE_SB=false}
+  }
+  await loadAll();
+  window.addEventListener('storage',e=>{if(e.key==='bv_data'){DB=lsGet('bv_data',[]);refreshAll()}});
+  window.addEventListener('online',()=>{flushOutbox();updateConn()});
+  window.addEventListener('offline',updateConn);
+  if(USE_SB){setInterval(flushOutbox,20000);}
+  updateConn();
+}
+async function loadAll(){
+  if(USE_SB){
+    try{
+      const {data,error}=await sb.from('violations').select('*').order('created_at',{ascending:false});
+      if(error)throw error;
+      let arr=(data||[]).map(fromRow);
+      // أبقِ البلاغات غير المتزامنة ظاهرة فوق البيانات البعيدة
+      const ids=new Set(arr.map(x=>x.id));
+      outboxGet().filter(o=>o.t==='insert').forEach(o=>{const r=fromRow(o.row);if(!ids.has(r.id))arr.unshift(r)});
+      DB=arr; lsSet('bv_data',DB);
+    }catch(e){ DB=lsGet('bv_data',[]); }   // عدم اتصال: اعرض النسخة المحلية المخزّنة
+  }else{
+    DB=lsGet('bv_data',[]);
+  }
+  refreshAll(); updateConn();
+}
+function fromRow(r){return {id:r.id,number:r.number,inspector:r.inspector,role:r.role,center:r.center,type:r.type,
+  severity:r.severity,points:r.points,description:r.description,status:r.status,lat:r.lat,lng:r.lng,
+  photoBefore:r.photo_before,photoAfter:r.photo_after,notes:r.notes,area:r.area,createdAt:r.created_at,closedAt:r.closed_at}}
+function toRow(v){return {id:v.id,number:v.number,inspector:v.inspector,role:v.role,center:v.center,type:v.type,
+  severity:v.severity,points:v.points,description:v.description,status:v.status,lat:v.lat,lng:v.lng,
+  photo_before:v.photoBefore,photo_after:v.photoAfter,notes:v.notes,area:v.area,created_at:v.createdAt,closed_at:v.closedAt}}
+
+async function flushOutbox(){
+  if(!USE_SB)return;
+  const o=outboxGet(); if(!o.length){updateConn();return}
+  const remain=[];
+  for(const op of o){
+    try{
+      if(op.t==='insert')      {const {error}=await sb.from('violations').upsert(op.row); if(error)throw error;}
+      else if(op.t==='update') {const {error}=await sb.from('violations').update(op.row).eq('id',op.row.id); if(error)throw error;}
+      else if(op.t==='delete') {const {error}=await sb.from('violations').delete().eq('id',op.id); if(error)throw error;}
+    }catch(e){remain.push(op)}
+  }
+  outboxSet(remain);
+  if(remain.length!==o.length){await loadAll(); if(!remain.length)toast('✓ تمّت مزامنة كل البلاغات المعلّقة');}
+  updateConn();
+}
+
+async function dbInsert(v){
+  DB.unshift(v); lsSet('bv_data',DB); refreshAll();              // حفظ فوري دائماً
+  if(USE_SB){ try{const {error}=await sb.from('violations').insert(toRow(v)); if(error)throw error; await loadAll();}
+    catch(e){ outboxAdd({t:'insert',row:toRow(v)}); updateConn(); } }
+}
+async function dbUpdate(v){
+  const i=DB.findIndex(x=>x.id===v.id); if(i>-1)DB[i]=v; lsSet('bv_data',DB); refreshAll();
+  if(USE_SB){ try{const {error}=await sb.from('violations').update(toRow(v)).eq('id',v.id); if(error)throw error; await loadAll();}
+    catch(e){ outboxAdd({t:'update',row:toRow(v)}); updateConn(); } }
+}
+async function dbDelete(id){
+  DB=DB.filter(x=>x.id!==id); lsSet('bv_data',DB); refreshAll();
+  if(USE_SB){ try{const {error}=await sb.from('violations').delete().eq('id',id); if(error)throw error; await loadAll();}
+    catch(e){ outboxAdd({t:'delete',id}); updateConn(); } }
+}
+function updateConn(){
+  const el=document.getElementById('conn');
+  const online=navigator.onLine, pend=pendingCount();
+  let cls,txt;
+  if(!USE_SB){cls='local';txt='💾 محلي';}
+  else if(!online){cls='off';txt=pend?('📴 معلّق '+pend):'📴 غير متصل';}
+  else if(pend){cls='off';txt='⏳ مزامنة '+pend;}
+  else{cls='on';txt='✓ متزامن';}
+  if(el){el.className='conn-pill '+cls;el.textContent=txt;}
+  const ss=document.getElementById('sync-state');
+  if(ss){ss.className='sync-tag '+(USE_SB?'sync-on':'sync-off');
+    ss.textContent=USE_SB?(online?(pend?('مزامنة لحظية — '+pend+' بانتظار الرفع'):'مزامنة لحظية مفعّلة (Supabase)'):'غير متصل — سيُزامن تلقائياً عند عودة الشبكة'):'محلي (هذا الجهاز فقط)';}
+}
+
+/* ============================================================
+   تسجيل الدخول
+============================================================ */
+function fillCenterSelects(){
+  const opts='<option value="">— اختر —</option>'+CENTERS.map(c=>`<option>${c}</option>`).join('');
+  ['lg-center','f-center'].forEach(id=>{const el=document.getElementById(id);if(el)el.innerHTML=CENTERS.map(c=>`<option>${c}</option>`).join('')});
+  document.getElementById('flt-center').innerHTML='<option value="">كل المراكز</option>'+CENTERS.map(c=>`<option>${c}</option>`).join('');
+}
+function doLogin(){
+  const name=document.getElementById('lg-name').value.trim();
+  const role=document.getElementById('lg-role').value;
+  const center=document.getElementById('lg-center').value;
+  if(!name){toast('أدخل الاسم');return}
+  USER={name,role,center};lsSet('bv_user',USER);
+  startApp();
+}
+function logout(){localStorage.removeItem('bv_user');location.reload()}
+function startApp(){
+  document.getElementById('login').classList.add('hidden');
+  document.getElementById('app').classList.remove('hidden');
+  document.getElementById('hd-name').textContent=USER.name;
+  document.getElementById('hd-role').textContent=USER.role;
+  document.getElementById('hd-av').textContent=USER.name.charAt(0);
+  document.getElementById('f-inspector').value=USER.name;
+  document.getElementById('f-center').value=USER.center;
+  resetForm();
+  refreshAll();
+}
+
+/* ============================================================
+   النموذج
+============================================================ */
+function genNumber(){const y=new Date().getFullYear();const n=(DB.length+1).toString().padStart(4,'0');return `BV-${y}-${n}`}
+function fmtDate(d){const t=new Date(d);return t.toLocaleString('ar-EG',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})}
+function resetForm(){
+  gpsCoords=null;photoBefore=null;
+  document.getElementById('f-number').value=genNumber();
+  document.getElementById('f-date').value=fmtDate(new Date());
+  document.getElementById('f-inspector').value=USER.name;
+  document.getElementById('f-center').value=USER.center;
+  document.getElementById('f-type').value='';
+  document.getElementById('f-area').value='';
+  document.getElementById('f-desc').value='';
+  document.getElementById('f-status').value='جديدة';
+  buildSevSelect();onSevChange();
+  document.getElementById('gps-title').textContent='تحديد الموقع الجغرافي (GPS)';
+  document.getElementById('gps-sub').textContent='اضغط لالتقاط الإحداثيات تلقائياً';
+  document.getElementById('gps-title').classList.remove('gps-ok');
+  document.getElementById('prev-before').innerHTML='';
+}
+function buildSevSelect(){
+  document.getElementById('f-severity').innerHTML=SEV_ORDER.map(s=>`<option>${s}</option>`).join('');
+}
+function onTypeChange(){
+  const t=TYPES.find(x=>x.name===document.getElementById('f-type').value);
+  if(t){document.getElementById('f-severity').value=t.sev;}
+  onSevChange();
+}
+function onSevChange(){
+  const s=document.getElementById('f-severity').value;
+  document.getElementById('f-points').value=SEV_POINTS[s]||'';
+}
+function getGPS(){
+  if(!navigator.geolocation){toast('الموقع غير مدعوم');return}
+  document.getElementById('gps-sub').textContent='جارٍ تحديد الموقع...';
+  navigator.geolocation.getCurrentPosition(p=>{
+    gpsCoords={lat:p.coords.latitude,lng:p.coords.longitude};
+    document.getElementById('gps-title').textContent='✓ تم تحديد الموقع';
+    document.getElementById('gps-title').classList.add('gps-ok');
+    document.getElementById('gps-sub').textContent=`${gpsCoords.lat.toFixed(5)}, ${gpsCoords.lng.toFixed(5)}`;
+  },e=>{document.getElementById('gps-sub').textContent='تعذّر تحديد الموقع — تأكد من تفعيل الإذن';},{enableHighAccuracy:true,timeout:10000});
+}
+function capturePhoto(input,which){
+  const file=input.files[0];if(!file)return;
+  const reader=new FileReader();
+  reader.onload=e=>{
+    const img=new Image();
+    img.onload=()=>{
+      const max=1000,scale=Math.min(1,max/Math.max(img.width,img.height));
+      const cv=document.createElement('canvas');cv.width=img.width*scale;cv.height=img.height*scale;
+      cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
+      const data=cv.toDataURL('image/jpeg',0.7);
+      if(which==='before'){photoBefore=data;document.getElementById('prev-before').innerHTML=
+        `<div class="thumb" style="margin-bottom:8px"><img src="${data}"><div class="rm" onclick="photoBefore=null;document.getElementById('prev-before').innerHTML=''">✕</div></div>`;}
+      else if(which==='editAfter'){window._editAfter=data;document.getElementById('edit-after-prev').innerHTML=`<div class="thumb"><img src="${data}"></div>`;}
+    };
+    img.src=e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+async function saveViolation(){
+  const type=document.getElementById('f-type').value;
+  if(!type){toast('اختر نوع المشوه');return}
+  const sev=document.getElementById('f-severity').value;
+  const v={
+    id:(crypto.randomUUID?crypto.randomUUID():'id'+Date.now()+Math.random()),
+    number:document.getElementById('f-number').value,
+    inspector:USER.name, role:USER.role,
+    center:document.getElementById('f-center').value,
+    type, severity:sev, points:SEV_POINTS[sev],
+    area:document.getElementById('f-area').value.trim(),
+    description:document.getElementById('f-desc').value.trim(),
+    status:document.getElementById('f-status').value,
+    lat:gpsCoords?gpsCoords.lat:null, lng:gpsCoords?gpsCoords.lng:null,
+    photoBefore, photoAfter:null, notes:'',
+    createdAt:new Date().toISOString(),
+    closedAt:document.getElementById('f-status').value==='مغلقة'?new Date().toISOString():null,
+  };
+  await dbInsert(v);
+  toast('✓ تم حفظ البلاغ '+v.number);
+  resetForm();
+  nav('list');
+}
+
+/* ============================================================
+   السجل
+============================================================ */
+function badge(text,color){return `<span class="badge" style="background:${color}1a;color:${color}"><span class="dot" style="background:${color}"></span>${text}</span>`}
+function renderList(){
+  const s=document.getElementById('flt-search').value.trim();
+  const fc=document.getElementById('flt-center').value;
+  const fs=document.getElementById('flt-sev').value;
+  const fst=document.getElementById('flt-status').value;
+  let rows=DB.filter(v=>{
+    if(fc&&v.center!==fc)return false;
+    if(fs&&v.severity!==fs)return false;
+    if(fst&&v.status!==fst)return false;
+    if(s){const blob=(v.number+v.type+v.area+v.inspector+v.description).toLowerCase();if(!blob.includes(s.toLowerCase()))return false}
+    return true;
+  });
+  const c=document.getElementById('list-container');
+  if(!rows.length){c.innerHTML='<div class="empty"><div class="ei">📭</div>لا توجد بلاغات مطابقة</div>';return}
+  c.innerHTML=rows.map(v=>{
+    const sc=SEV_COLOR[v.severity], stc=ST_COLOR[v.status];
+    return `<div class="v-card"><div class="v-stripe" style="background:${sc}"></div><div class="v-body">
+      <div class="v-top"><div><div class="v-num">${v.number}</div><div class="v-type">${v.type}</div></div>
+        <div class="pts" style="color:${sc}">${v.points}<span style="font-size:10px;color:var(--ink-soft)"> نقطة</span></div></div>
+      <div class="v-meta">
+        <span>🏢 ${v.center}</span>${v.area?`<span>📌 ${v.area}</span>`:''}
+        <span>👤 ${v.inspector}</span><span>🕐 ${fmtDate(v.createdAt)}</span>
+        ${v.lat?`<span>📍 موقع محدد</span>`:''}${v.photoBefore?`<span>📷 صورة</span>`:''}
+      </div>
+      <div class="v-foot">
+        <div style="display:flex;gap:6px">${badge(v.severity,sc)}${badge(v.status,stc)}</div>
+        <div class="v-actions">
+          <button class="icon-btn" onclick="openEdit('${v.id}')" title="تفاصيل/تعديل">✏️</button>
+          ${ROLES[USER.role].del?`<button class="icon-btn del" onclick="askDelete('${v.id}')" title="حذف">🗑️</button>`:''}
+        </div>
+      </div>
+    </div></div>`;
+  }).join('');
+}
+
+/* ============================================================
+   نافذة التعديل / الإغلاق
+============================================================ */
+function openEdit(id){
+  const v=DB.find(x=>x.id===id);if(!v)return;
+  const p=ROLES[USER.role];
+  window._editAfter=v.photoAfter;
+  const root=document.getElementById('modal-root');
+  root.innerHTML=`<div class="overlay" onclick="if(event.target===this)closeModal()">
+    <div class="modal"><div class="modal-head"><h3>${v.number}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      ${v.photoBefore?`<div class="field"><label>الصورة قبل المعالجة</label><div class="thumb"><img src="${v.photoBefore}"></div></div>`:''}
+      <div class="field"><label>نوع المشوه</label><input class="readonly" value="${v.type}" readonly></div>
+      <div class="grid-2">
+        <div class="field"><label>مستوى الخطورة</label>
+          <select id="ed-sev" ${p.edit?'':'disabled'} onchange="document.getElementById('ed-pts').value=({'حرجة':100,'عالية':80,'متوسطة':60,'منخفضة':40,'بسيطة':20,'توجيه فقط':10})[this.value]">
+            ${SEV_ORDER.map(s=>`<option ${s===v.severity?'selected':''}>${s}</option>`).join('')}</select></div>
+        <div class="field"><label>النقاط</label><input id="ed-pts" class="readonly" value="${v.points}" readonly></div>
+      </div>
+      <div class="field"><label>الحالة</label>
+        <select id="ed-status" ${p.edit?'':'disabled'}>
+          <option ${v.status==='جديدة'?'selected':''}>جديدة</option>
+          <option ${v.status==='تحت المعالجة'?'selected':''}>تحت المعالجة</option>
+          <option ${v.status==='مغلقة'?'selected':''} ${p.close?'':'disabled'}>مغلقة</option>
+        </select>
+        ${!p.close?'<div style="font-size:11px;color:var(--ink-soft);margin-top:4px">صلاحية الإغلاق للمشرف فأعلى</div>':''}
+      </div>
+      <div class="field"><label>ملاحظات المعالجة</label><textarea id="ed-notes" ${p.edit?'':'disabled'}>${v.notes||''}</textarea></div>
+      <div class="field"><label>الصورة بعد المعالجة</label>
+        <input type="file" accept="image/*" capture="environment" id="cam-after" class="hidden" onchange="capturePhoto(this,'editAfter')">
+        <div id="edit-after-prev">${v.photoAfter?`<div class="thumb"><img src="${v.photoAfter}"></div>`:''}</div>
+        ${p.edit?`<button class="media-btn" style="margin-top:8px" onclick="document.getElementById('cam-after').click()"><span class="mi">📷</span><span class="mt">إرفاق صورة المعالجة</span></button>`:''}
+      </div>
+      ${p.edit?`<button class="btn btn-primary btn-block" onclick="saveEdit('${v.id}')">💾 حفظ التعديل</button>`:'<div style="text-align:center;color:var(--ink-soft);font-size:13px">صلاحية العرض فقط</div>'}
+    </div></div></div>`;
+}
+async function saveEdit(id){
+  const v=DB.find(x=>x.id===id);if(!v)return;
+  const newStatus=document.getElementById('ed-status').value;
+  v.severity=document.getElementById('ed-sev').value;
+  v.points=SEV_POINTS[v.severity];
+  v.notes=document.getElementById('ed-notes').value.trim();
+  v.photoAfter=window._editAfter||null;
+  if(newStatus==='مغلقة'&&v.status!=='مغلقة')v.closedAt=new Date().toISOString();
+  if(newStatus!=='مغلقة')v.closedAt=null;
+  v.status=newStatus;
+  await dbUpdate(v);closeModal();toast('✓ تم حفظ التعديل');
+}
+function askDelete(id){
+  const v=DB.find(x=>x.id===id);
+  document.getElementById('modal-root').innerHTML=`<div class="overlay" onclick="if(event.target===this)closeModal()">
+    <div class="modal" style="max-width:340px"><div class="modal-body" style="text-align:center">
+      <div style="font-size:40px;margin-bottom:8px">🗑️</div>
+      <h3 style="margin-bottom:6px">حذف البلاغ ${v.number}؟</h3>
+      <p style="font-size:13px;color:var(--ink-soft);margin-bottom:18px">لا يمكن التراجع عن هذا الإجراء</p>
+      <div class="btn-row"><button class="btn btn-danger" style="flex:1" onclick="confirmDelete('${id}')">حذف</button>
+      <button class="btn btn-ghost" style="flex:1" onclick="closeModal()">إلغاء</button></div>
+    </div></div></div>`;
+}
+async function confirmDelete(id){await dbDelete(id);closeModal();toast('تم الحذف')}
+function closeModal(){document.getElementById('modal-root').innerHTML=''}
+
+/* ============================================================
+   اللوحة القيادية
+============================================================ */
+function daysBetween(a,b){return Math.max(0,(new Date(b)-new Date(a))/86400000)}
+function refreshAll(){
+  if(!USER)return;
+  renderList();renderKPIs();renderCharts();renderMap();renderRanks();renderSettings();
+}
+function renderKPIs(){
+  const total=DB.length;
+  const crit=DB.filter(v=>v.severity==='حرجة').length;
+  const high=DB.filter(v=>v.severity==='عالية').length;
+  const closed=DB.filter(v=>v.status==='مغلقة').length;
+  const open=total-closed;
+  const rate=total?Math.round(closed/total*100):0;
+  const closedRecs=DB.filter(v=>v.status==='مغلقة'&&v.closedAt&&v.createdAt);
+  const avg=closedRecs.length?(closedRecs.reduce((s,v)=>s+daysBetween(v.createdAt,v.closedAt),0)/closedRecs.length).toFixed(1):'—';
+  const k=[
+    {l:'إجمالي البلاغات',v:total,u:'بلاغ',c:''},
+    {l:'مخالفات حرجة',v:crit,u:'100 نقطة',c:'crit'},
+    {l:'عالية الخطورة',v:high,u:'80 نقطة',c:'high'},
+    {l:'مغلقة',v:closed,u:'بلاغ',c:'ok'},
+    {l:'مفتوحة',v:open,u:'بلاغ',c:'acc'},
+    {l:'نسبة الإنجاز',v:rate+'%',u:'من الإجمالي',c:'ok'},
+    {l:'متوسط مدة الإغلاق',v:avg,u:'يوم',c:'acc'},
+  ];
+  document.getElementById('kpi-grid').innerHTML=k.map(x=>
+    `<div class="kpi ${x.c}"><div class="kl">${x.l}</div><div class="kv">${x.v}</div><div class="ku">${x.u}</div></div>`).join('');
+}
+function groupCount(key){const m={};DB.forEach(v=>{const k=v[key]||'غير محدد';m[k]=(m[k]||0)+1});return m}
+function makeChart(id,type,labels,data,colors){
+  if(charts[id])charts[id].destroy();
+  const ctx=document.getElementById(id);if(!ctx)return;
+  charts[id]=new Chart(ctx,{type,data:{labels,datasets:[{data,backgroundColor:colors,borderRadius:6,borderWidth:type==='doughnut'?2:0,borderColor:'#fff'}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:type!=='bar',position:'bottom',labels:{font:{family:'Tajawal'},padding:12}}},
+      scales:type==='bar'?{x:{ticks:{font:{family:'Tajawal'}},grid:{display:false}},y:{ticks:{font:{family:'Tajawal'},precision:0},grid:{color:'#f0ede5'}}}:{}}});
+}
+function renderCharts(){
+  const sg={};SEV_ORDER.forEach(s=>{const c=DB.filter(v=>v.severity===s).length;if(c)sg[s]=c});
+  makeChart('ch-sev','doughnut',Object.keys(sg),Object.values(sg),Object.keys(sg).map(s=>SEV_COLOR[s]));
+  const cg=groupCount('center');
+  makeChart('ch-center','bar',Object.keys(cg),Object.values(cg),'#0e6e5c');
+  const tg=groupCount('type');
+  makeChart('ch-type','bar',Object.keys(tg),Object.values(tg),'#c8881f');
+  const mg={};DB.forEach(v=>{const d=new Date(v.createdAt);const k=d.toLocaleDateString('ar-EG',{month:'short',year:'2-digit'});mg[k]=(mg[k]||0)+1});
+  makeChart('ch-month','bar',Object.keys(mg),Object.values(mg),'#2f7fb5');
+}
+let zoneBounds=null;
+function centerIcon(st){return L.divIcon({className:'',html:`<div style="background:${st.color};width:30px;height:30px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:2.5px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.3);display:grid;place-items:center"><span style="transform:rotate(45deg);font-size:14px">${st.emoji}</span></div>`,iconSize:[30,30],iconAnchor:[15,28]})}
+function drawZone(){
+  if(ZONE_GEOJSON){
+    // المسار الرسمي: رسم GeoJSON كما هو (Leaflet يقرأ ترتيب [lng,lat] تلقائياً)
+    const layer=L.geoJSON(ZONE_GEOJSON,{
+      style:()=>({color:'#0e6e5c',weight:2.5,fillColor:'#0e6e5c',fillOpacity:.07,dashArray:'6 5'}),
+      pointToLayer:(f,latlng)=>{const t=(f.properties&&f.properties.type)||'تواجد بلدي';return L.marker(latlng,{icon:centerIcon(CENTER_STYLE[t]||CENTER_STYLE['تواجد بلدي'])})},
+      onEachFeature:(f,l)=>{const p=f.properties||{};if(p.name)l.bindPopup(`<b>${p.name}</b>${p.type?'<br>'+p.type:''}`)}
+    }).addTo(map);
+    zoneBounds=layer.getBounds();
+  }else{
+    // المسار التمثيلي التقريبي
+    L.polygon(ZONE.boundary,{color:'#0e6e5c',weight:2.5,fillColor:'#0e6e5c',fillOpacity:.07,dashArray:'6 5'})
+      .bindTooltip('نطاق المقام – الخزنة',{direction:'center'}).addTo(map);
+    ZONE.centers.forEach(c=>{
+      const st=CENTER_STYLE[c.type]||CENTER_STYLE['تواجد بلدي'];
+      L.marker([c.lat,c.lng],{icon:centerIcon(st)}).bindPopup(`<b>${c.name}</b><br>${c.type}`).addTo(map);
+    });
+    zoneBounds=L.latLngBounds(ZONE.boundary);
+  }
+}
+function renderMap(){
+  if(!map){
+    map=L.map('map').setView([24.20,55.70],11);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap',maxZoom:19}).addTo(map);
+  }
+  if(!zoneDrawn){drawZone();zoneDrawn=true;}
+  if(mapLayer)map.removeLayer(mapLayer);
+  mapLayer=L.layerGroup().addTo(map);
+  const pts=DB.filter(v=>v.lat&&v.lng);
+  pts.forEach(v=>{
+    L.circleMarker([v.lat,v.lng],{radius:8,fillColor:SEV_COLOR[v.severity],color:'#fff',weight:2,fillOpacity:.9})
+      .bindPopup(`<b>${v.number}</b><br>${v.type}<br>${v.center} — ${v.severity}<br>الحالة: ${v.status}`).addTo(mapLayer);
+  });
+  const zb=zoneBounds?L.latLngBounds(zoneBounds.getSouthWest(),zoneBounds.getNorthEast()):L.latLngBounds(ZONE.boundary);
+  if(pts.length)pts.forEach(v=>zb.extend([v.lat,v.lng]));
+  map.fitBounds(zb.pad(0.08));
+  setTimeout(()=>map.invalidateSize(),200);
+}
+function renderRanks(){
+  const ins={};DB.forEach(v=>{ins[v.inspector]=(ins[v.inspector]||0)+1});
+  const insSorted=Object.entries(ins).sort((a,b)=>b[1]-a[1]).slice(0,6);
+  document.getElementById('rank-inspectors').innerHTML=insSorted.length?insSorted.map((r,i)=>
+    `<div class="rank-row"><div class="rn">${i+1}</div><div class="rname">${r[0]}</div><div class="rval">${r[1]} بلاغ</div></div>`).join(''):'<div class="empty" style="padding:20px">لا بيانات</div>';
+  const ar={};DB.forEach(v=>{const a=v.area||v.center||'غير محدد';ar[a]=(ar[a]||0)+1});
+  const arSorted=Object.entries(ar).sort((a,b)=>b[1]-a[1]).slice(0,6);
+  document.getElementById('rank-areas').innerHTML=arSorted.length?arSorted.map((r,i)=>
+    `<div class="rank-row"><div class="rn" style="background:#f7ecd6;color:#c8881f">${i+1}</div><div class="rname">${r[0]}</div><div class="rval">${r[1]} مخالفة</div></div>`).join(''):'<div class="empty" style="padding:20px">لا بيانات</div>';
+}
+
+/* ============================================================
+   الإعدادات
+============================================================ */
+function renderSettings(){
+  document.getElementById('sync-state').className='sync-tag '+(USE_SB?'sync-on':'sync-off');
+  document.getElementById('sync-state').textContent=USE_SB?'مزامنة لحظية مفعّلة (Supabase)':'محلي (هذا الجهاز فقط)';
+  document.getElementById('centers-list').innerHTML=CENTERS.map((c,i)=>
+    `<div class="rank-row"><div class="rname">🏢 ${c}</div><button class="icon-btn del" onclick="removeCenter(${i})">✕</button></div>`).join('');
+  document.getElementById('points-ref').innerHTML=SEV_ORDER.map(s=>
+    `<div class="rank-row"><span class="dot" style="background:${SEV_COLOR[s]};margin-left:6px"></span><div class="rname">${s}</div><div class="rval">${SEV_POINTS[s]} نقطة</div></div>`).join('');
+}
+function addCenter(){const v=document.getElementById('new-center').value.trim();if(!v)return;if(!CENTERS.includes(v))CENTERS.push(v);lsSet('bv_centers',CENTERS);document.getElementById('new-center').value='';fillCenterSelects();renderSettings()}
+function removeCenter(i){CENTERS.splice(i,1);lsSet('bv_centers',CENTERS);fillCenterSelects();renderSettings()}
+
+function exportExcel(){
+  const rows=DB.map(v=>({'رقم البلاغ':v.number,'التاريخ':fmtDate(v.createdAt),'المركز':v.center,'المنطقة':v.area||'',
+    'نوع المشوه':v.type,'الخطورة':v.severity,'النقاط':v.points,'المراقب':v.inspector,'الحالة':v.status,
+    'تاريخ الإغلاق':v.closedAt?fmtDate(v.closedAt):'','الموقع':v.lat?`${v.lat.toFixed(5)},${v.lng.toFixed(5)}`:'','الوصف':v.description||'','ملاحظات':v.notes||''}));
+  const ws=XLSX.utils.json_to_sheet(rows);ws['!cols']=Array(13).fill({wch:16});
+  const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'المخالفات');
+  XLSX.writeFile(wb,`المشوهات_البصرية_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+function exportJSON(){
+  const blob=new Blob([JSON.stringify(DB,null,2)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='backup_violations.json';a.click();
+}
+
+/* ============================================================
+   تنقّل + أدوات
+============================================================ */
+function nav(view){
+  ['register','list','dash','settings'].forEach(v=>document.getElementById('v-'+v).classList.add('hidden'));
+  document.getElementById('v-'+view).classList.remove('hidden');
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.toggle('active',b.dataset.view===view));
+  if(view==='dash'){renderKPIs();renderCharts();renderRanks();renderMap();}
+  window.scrollTo(0,0);
+}
+function toast(msg){const t=document.createElement('div');t.className='toast';t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.remove(),2400)}
+
+/* ============================================================
+   بدء التشغيل
+============================================================ */
+(async function(){
+  await initData();
+  fillCenterSelects();
+  // populate type & filter selects
+  document.getElementById('f-type').innerHTML='<option value="">— اختر النوع —</option>'+TYPES.map(t=>`<option>${t.name}</option>`).join('');
+  document.getElementById('flt-sev').innerHTML='<option value="">كل المستويات</option>'+SEV_ORDER.map(s=>`<option>${s}</option>`).join('');
+  buildSevSelect();
+  // تثبيت كتطبيق على الجوال (PWA manifest مُولّد ذاتياً)
+  try{
+    const icon="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='512' height='512'%3E%3Crect width='512' height='512' rx='110' fill='%230e6e5c'/%3E%3Ctext x='256' y='350' font-size='260' text-anchor='middle'%3E%F0%9F%9B%B0%EF%B8%8F%3C/text%3E%3C/svg%3E";
+    const mani={name:'رصد المشوهات البصرية',short_name:'رصد المشوهات',start_url:'.',display:'standalone',
+      background_color:'#0e6e5c',theme_color:'#0e6e5c',dir:'rtl',lang:'ar',
+      icons:[{src:icon,sizes:'512x512',type:'image/svg+xml',purpose:'any maskable'}]};
+    const l=document.createElement('link');l.rel='manifest';
+    l.href=URL.createObjectURL(new Blob([JSON.stringify(mani)],{type:'application/manifest+json'}));
+    document.head.appendChild(l);
+  }catch(e){}
+  USER=lsGet('bv_user',null);
+  if(USER){startApp();}else{document.getElementById('lg-center').innerHTML=CENTERS.map(c=>`<option>${c}</option>`).join('')}
+  updateConn();
+})();
+</script>
+</body>
+</html>
